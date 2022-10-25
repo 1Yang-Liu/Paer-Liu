@@ -1,0 +1,75 @@
+clc
+clear
+%定义材料参数
+    Ef1=230; Ef3=15; Gf12=9; Gf31=5; vf12=0.25;vf23=0.3;Xf=4900; %T700-13K纤维参数
+    dmu=0.60;dX=0.35;Ef1=dmu*Ef1;Ef3=dmu*Ef3; Gf12=dmu*Gf12; Gf31=dmu*Gf31;Xf=Xf*dX;%对纤维的模量和强度进行折减
+    Em=350;vm=0.2; Gm=Em/[2*(1+vm)]; Xm=310; Xm=Xm*0.4; %SIC基体模量参数
+    Ep=1*10^-8; vp=0.25; Gp=Ep/[2*(1+vp)]; %孔隙模量参数
+    %Dn=1.45; lf=800;df=7;  tu=1.02; ts=0.34;  Ln=9.04; %RVE的结构参数，测试用 
+    Dn=0.6; lf=800;df=7;      %针刺区域直径   %纤维的长细
+    tu=0.75; ts=0.25;  pn=25;  Ln=(100/pn)^0.5; %RVE的结构参数 
+    %使用排水法测得NP-C/SIC的孔隙率和纤维体积分数
+    Vf=0.31;  Vp=0.175;Vm=1-Vf-Vp;       %单轴拉伸中Ref NIE的Vp为0.16，圆轴扭转中Ref Yu G的Vp为0.19
+    Vcf=0.36; Vcm=1-Vcf; Vsf=[Vf*(tu+ts)-Vcf*tu]/ts;Vsm=1-Vsf;   %NP-C/SIC各层的纤维体积分数
+    Strain=0.71/100;UTS1=1000*Ef1*Strain*Vcf*[tu/(tu+ts)]/2; 
+     %文献Nie测出在0.71%应变时，UTS为158.9MPa,铺层为90/0,拉伸强度由UD纤维决定
+    Strain=0.65/100;UTS2=1000*10.85*Strain*(1-Vf);
+     %文献Nie测出在0.65%应变时，UTS为42.3/46.53MPa,铺层为同向,剪切强度由基体决定
+    Ed=Vcf*Ef1
+%%%%%使用经验公式计算等效基体力学性能，
+Vemp=Vp/(1-Vf);               %计算等效基体的孔隙率
+    rm=(1+vm)/[3*(1-vm)];Eem=Em*(1-Vemp/[rm*(1-Vemp)]);vem=vm;Gem=Eem/[2*(1+vem)]; %使用Mori-Tanaka法完成等效基体模量计算
+   % ru=(8-10*vm)/[15*(1-vm)];Gem=Em*(1-Vemp/[ru*(1-Vemp)]);vem=Eem/(2*Gem)-1;有问题，需要重新调试
+    Xem=Xm*[1-1.209*Vemp^(2/3)];                   %Quintanilla经验公式完成等效基体强度计算
+    EM=[Eem,vem,Xem]
+% Xem=20
+%%%%%NASA经验公式用于单向布强度计算，
+    Xut=Vcf*Xf;Xuc=Xut/2;                             %此计算了X方向强度
+    dn=0.7;  UTS=dn*Xut*[tu/(tu+ts)]/2;      %测试用，铺层为[0/w/90/w]n，针刺损伤衰减系数dn=0.7，Nie强度值为158.90MPa
+    %经验公式中du=(1-Eem/Ef3)，du=(1-Eem/Ef3)，计算不收敛，重新赋值。
+    dY=0.1;Yut=[1-(Vcf^0.5-Vcf)*dY]*Xem;Yuc=Yut*2;              %此计算了Y方向拉伸强度
+    UTS3=dn*Yut*[tu/(tu+ts)]/2;            %测试用，铺层为铺层为[0/w/90/w]n。
+    dS=0.9;Sut=[1-(Vcf^0.5-Vcf)*dS]*Xem;            %此计算了S方向剪切强度
+    UTS4=dn*Sut*[tu/(tu+ts)];              %测试用，铺层为单向，文献Yu强度值为42.33。
+UDStrength=[Xut,Xuc,Yut,Yuc,Sut]
+NPStrength=[UTS,UTS4]
+
+%%%%%Chamis经验公式用于单向布模量计算
+            Eu11=Vcf*Ef1+(1-Vcf)*Eem; Eu33=Eem/[1-Vcf^0.5*(1-Eem/Ef3)];Eu22=Eu33;
+            Gu12=Gem/[1-Vcf^0.5*(1-Gem/Gf12)]; Gu23=Gem/[1-Vcf^0.5*(1-Gem/Gf31)];Gu13=Gu12;
+            vu12=Vcf*vf12+(1-Vcf)*vem; vu23=Eu33/(2*Gu23)-1;vu13=vu12;
+             Su=[1/Eu11,-vu12/Eu11,-vu13/Eu11,0,0,0;
+                 -vu12/Eu11,1/Eu22,-vu23/Eu22,0,0,0;
+                 -vu13/Eu11,-vu23/Eu22,1/Eu33,0,0,0;
+                 0,0,0,1/Gu23,0,0;0,0,0,0,1/Gu13,0;0,0,0,0,0,1/Gu12];%定义单向布的柔度矩阵
+             Sn=[1/Eu33,-vu23/Eu22,-vu13/Eu11,0,0,0;
+                 -vu23/Eu22,1/Eu22,-vu12/Eu11,0,0,0;
+                 -vu13/Eu11,-vu12/Eu11,1/Eu11,0,0,0;
+                 0,0,0,1/Gu12,0,0;0,0,0,0,1/Gu13,0;0,0,0,0,0,1/Gu23];  ;%定义针刺区域的柔度矩阵
+              UDfiber=[Eu11,Eu22,Eu33;Gu12,Gu23,Gu13;vu12,vu23,vu13]
+              
+%%%%Halpin-Tsai模型用于短切纤维毡模量计算
+            n1=[Ef1/Eem-1]/[Ef1/Eem+2*(lf/df)];
+            n2=(Ef3/Eem-1)/(Ef3/Eem+2);
+            E1=Eem*[1+(2*lf/df)*n1*Vsf]/(1-n1*Vsf);
+            E2=Eem*[1+2*n2*Vsf]/(1-n2*Vsf);
+            Es=3*E1/8+5*E2/8;Gs=E1/8+E2/4;vs=Es/(2*Gs)-1;
+%                Es=45;vs=0.2;Gs=Es/[2*(1+vs)];Xs=55;
+            Ss=[1/Es,-vs/Es,-vs/Es,0,0,0;-vs/Es,1/Es,-vs/Es,0,0,0;-vs/Es,-vs/Es,1/Es,0,0,0;
+                 0,0,0,1/Gs,0,0;0,0,0,0,1/Gs,0;0,0,0,0,0,1/Gs];%定义纤维毡的柔度矩阵
+            Fiberfelt=[Es,Gs,vs]
+
+% %%%% 转角后的单向布刚度矩阵,Ref NIE,[0/w/90/w]。Paper Yu G为铺层同向不需要转角，省去这段
+%            Cu90=Roate(0,0,90,'XYZ')'*inv(Su)*Roate(0,0,90,'XYZ');%转角公式 
+%            CU=[inv(Su)+Cu90]/2;   Su=inv(CU);  %计算单向纤维的刚度矩阵  
+
+%%%%经典层合板理论用于RVE模型模量计算
+        An=3.1415*Dn^2/4;AR=Ln^2;   %针刺区域面积
+        SL=[tu/(tu+ts)]*Su+[ts/(tu+ts)]*Ss;                  %Laminite：度矩阵叠加。
+        CR=(1-An/AR)*inv(SL)+[An/AR]*inv(Sn); SR=inv(CR);     %RVE：刚度阵叠加。
+%      CR=(1-An/AR)*CL+[An/AR]*inv(Sn); SR=inv(CR);                    %测试用，RVE：刚度阵叠加。
+%      SL=[tu/(tu+ts)]*SU+[ts/(tu+ts)]*Ss;SR=(1-An/AR)*SL+[An/AR]*Sn;   %测试用，Lami:柔度&RVE:柔度
+        ER11=1/SR(1,1); ER22=1/SR(2,2); ER33=1/SR(3,3);      %提取柔度矩阵中的模量和泊松比。
+        GR12=1/SR(4,4); GR23=1/SR(5,5); GR31=1/SR(6,6);      
+        vR12=-SR(2,1)*ER11; vR23=-SR(3,2)*ER22;vR23=-SR(1,3)*ER33;
+NPmodulus=[ER11,ER22,ER33;GR12,GR23,GR31;vR12,vR23,vR23]
