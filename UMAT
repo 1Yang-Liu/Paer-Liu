@@ -1,75 +1,553 @@
-clc
-clear
-%定义材料参数
-    Ef1=230; Ef3=15; Gf12=9; Gf31=5; vf12=0.25;vf23=0.3;Xf=4900; %T700-13K纤维参数
-    dmu=0.60;dX=0.35;Ef1=dmu*Ef1;Ef3=dmu*Ef3; Gf12=dmu*Gf12; Gf31=dmu*Gf31;Xf=Xf*dX;%对纤维的模量和强度进行折减
-    Em=350;vm=0.2; Gm=Em/[2*(1+vm)]; Xm=310; Xm=Xm*0.4; %SIC基体模量参数
-    Ep=1*10^-8; vp=0.25; Gp=Ep/[2*(1+vp)]; %孔隙模量参数
-    %Dn=1.45; lf=800;df=7;  tu=1.02; ts=0.34;  Ln=9.04; %RVE的结构参数，测试用 
-    Dn=0.6; lf=800;df=7;      %针刺区域直径   %纤维的长细
-    tu=0.75; ts=0.25;  pn=25;  Ln=(100/pn)^0.5; %RVE的结构参数 
-    %使用排水法测得NP-C/SIC的孔隙率和纤维体积分数
-    Vf=0.31;  Vp=0.175;Vm=1-Vf-Vp;       %单轴拉伸中Ref NIE的Vp为0.16，圆轴扭转中Ref Yu G的Vp为0.19
-    Vcf=0.36; Vcm=1-Vcf; Vsf=[Vf*(tu+ts)-Vcf*tu]/ts;Vsm=1-Vsf;   %NP-C/SIC各层的纤维体积分数
-    Strain=0.71/100;UTS1=1000*Ef1*Strain*Vcf*[tu/(tu+ts)]/2; 
-     %文献Nie测出在0.71%应变时，UTS为158.9MPa,铺层为90/0,拉伸强度由UD纤维决定
-    Strain=0.65/100;UTS2=1000*10.85*Strain*(1-Vf);
-     %文献Nie测出在0.65%应变时，UTS为42.3/46.53MPa,铺层为同向,剪切强度由基体决定
-    Ed=Vcf*Ef1
-%%%%%使用经验公式计算等效基体力学性能，
-Vemp=Vp/(1-Vf);               %计算等效基体的孔隙率
-    rm=(1+vm)/[3*(1-vm)];Eem=Em*(1-Vemp/[rm*(1-Vemp)]);vem=vm;Gem=Eem/[2*(1+vem)]; %使用Mori-Tanaka法完成等效基体模量计算
-   % ru=(8-10*vm)/[15*(1-vm)];Gem=Em*(1-Vemp/[ru*(1-Vemp)]);vem=Eem/(2*Gem)-1;有问题，需要重新调试
-    Xem=Xm*[1-1.209*Vemp^(2/3)];                   %Quintanilla经验公式完成等效基体强度计算
-    EM=[Eem,vem,Xem]
-% Xem=20
-%%%%%NASA经验公式用于单向布强度计算，
-    Xut=Vcf*Xf;Xuc=Xut/2;                             %此计算了X方向强度
-    dn=0.7;  UTS=dn*Xut*[tu/(tu+ts)]/2;      %测试用，铺层为[0/w/90/w]n，针刺损伤衰减系数dn=0.7，Nie强度值为158.90MPa
-    %经验公式中du=(1-Eem/Ef3)，du=(1-Eem/Ef3)，计算不收敛，重新赋值。
-    dY=0.1;Yut=[1-(Vcf^0.5-Vcf)*dY]*Xem;Yuc=Yut*2;              %此计算了Y方向拉伸强度
-    UTS3=dn*Yut*[tu/(tu+ts)]/2;            %测试用，铺层为铺层为[0/w/90/w]n。
-    dS=0.9;Sut=[1-(Vcf^0.5-Vcf)*dS]*Xem;            %此计算了S方向剪切强度
-    UTS4=dn*Sut*[tu/(tu+ts)];              %测试用，铺层为单向，文献Yu强度值为42.33。
-UDStrength=[Xut,Xuc,Yut,Yuc,Sut]
-NPStrength=[UTS,UTS4]
+c-----------------------------------------------------------------
+c  3DHashin+puck渐进损伤断裂失效住准则
+c  state1-6为未损伤应力，state7为单元删除,state8-12为损伤系数，
+c  state20为puck最危险平面角度（弧度制），state21为puck失效是否满足（1为满足）
+c-----------------------------------------------------------------
+      subroutine vumat(
+C Read only (unmodifiable)variables -
+     1  nblock, ndir, nshr, nstatev, nfieldv, nprops, jInfoArray,
+     2  stepTime, totalTime, dtArray, cmname, coordMp, charLength,
+     3  props, density, strainInc, relSpinInc,
+     4  tempOld, stretchOld, defgradOld, fieldOld,
+     5  stressOld, stateOld, enerInternOld, enerInelasOld,
+     6  tempNew, stretchNew, defgradNew, fieldNew,
+C Write only (modifiable) variables -
+     7  stressNew, stateNew, enerInternNew, enerInelasNew )
+C 
+      include 'vaba_param.inc'
+C
+      dimension props(nprops), density(nblock), coordMp(nblock,*),
+     1  charLength(nblock), dtArray(2*(nblock)+1), strainInc(nblock,ndir
+     1  +nshr),
+     2  relSpinInc(nblock,nshr), tempOld(nblock), 
+     3  stretchOld(nblock,ndir+nshr),
+     4  defgradOld(nblock,ndir+nshr+nshr),
+     5  fieldOld(nblock,nfieldv), stressOld(nblock,ndir+nshr),
+     6  stateOld(nblock,nstatev), enerInternOld(nblock),
+     7  enerInelasOld(nblock), tempNew(nblock),
+     8  stretchNew(nblock,ndir+nshr),
+     8  defgradNew(nblock,ndir+nshr+nshr),
+     9  fieldNew(nblock,nfieldv),
+     1  stressNew(nblock,ndir+nshr), stateNew(nblock,nstatev),
+     2  enerInternNew(nblock), enerInelasNew(nblock), jInfoArray(*)
+C     
+      character*80 cmname
 
-%%%%%Chamis经验公式用于单向布模量计算
-            Eu11=Vcf*Ef1+(1-Vcf)*Eem; Eu33=Eem/[1-Vcf^0.5*(1-Eem/Ef3)];Eu22=Eu33;
-            Gu12=Gem/[1-Vcf^0.5*(1-Gem/Gf12)]; Gu23=Gem/[1-Vcf^0.5*(1-Gem/Gf31)];Gu13=Gu12;
-            vu12=Vcf*vf12+(1-Vcf)*vem; vu23=Eu33/(2*Gu23)-1;vu13=vu12;
-             Su=[1/Eu11,-vu12/Eu11,-vu13/Eu11,0,0,0;
-                 -vu12/Eu11,1/Eu22,-vu23/Eu22,0,0,0;
-                 -vu13/Eu11,-vu23/Eu22,1/Eu33,0,0,0;
-                 0,0,0,1/Gu23,0,0;0,0,0,0,1/Gu13,0;0,0,0,0,0,1/Gu12];%定义单向布的柔度矩阵
-             Sn=[1/Eu33,-vu23/Eu22,-vu13/Eu11,0,0,0;
-                 -vu23/Eu22,1/Eu22,-vu12/Eu11,0,0,0;
-                 -vu13/Eu11,-vu12/Eu11,1/Eu11,0,0,0;
-                 0,0,0,1/Gu12,0,0;0,0,0,0,1/Gu13,0;0,0,0,0,0,1/Gu23];  ;%定义针刺区域的柔度矩阵
-              UDfiber=[Eu11,Eu22,Eu33;Gu12,Gu23,Gu13;vu12,vu23,vu13]
-              
-%%%%Halpin-Tsai模型用于短切纤维毡模量计算
-            n1=[Ef1/Eem-1]/[Ef1/Eem+2*(lf/df)];
-            n2=(Ef3/Eem-1)/(Ef3/Eem+2);
-            E1=Eem*[1+(2*lf/df)*n1*Vsf]/(1-n1*Vsf);
-            E2=Eem*[1+2*n2*Vsf]/(1-n2*Vsf);
-            Es=3*E1/8+5*E2/8;Gs=E1/8+E2/4;vs=Es/(2*Gs)-1;
-%                Es=45;vs=0.2;Gs=Es/[2*(1+vs)];Xs=55;
-            Ss=[1/Es,-vs/Es,-vs/Es,0,0,0;-vs/Es,1/Es,-vs/Es,0,0,0;-vs/Es,-vs/Es,1/Es,0,0,0;
-                 0,0,0,1/Gs,0,0;0,0,0,0,1/Gs,0;0,0,0,0,0,1/Gs];%定义纤维毡的柔度矩阵
-            Fiberfelt=[Es,Gs,vs]
+      DOUBLE PRECISION     
+     1 E1,E2,E3,G12,G13,G23,V12,V13,V23,V21,V31,V32,S(6), 
+     2 XT,XC,YT,YC,VF12,EF1,C0,S0,TMAT(6,6),smt1,smc1,
+     3 S21,FFT,FFC,xMFT,xMFC,NMP,NW1,G23O,D22T,EPISFF,
+     4 MFLC,DFT,DFC,DMT,DMC,DMLC,xm,xn,SD22C,SIGRF,
+     5 T21C,RVVA,ZERO,MAXIM,E2O,G12O,d22c,d33c,
+     6 MFMV,DMG,COUNTER,XX,VAR,E1O,XTF,RT1,RC1,
+     7 RVVA1,YT1,S211,PTR,SIGN,TAUNT,TAUNL  
+      INTEGER DEG,MAT,EpisfNN,EpisfNT,EpisfNL
 
-% %%%% 转角后的单向布刚度矩阵,Ref NIE,[0/w/90/w]。Paper Yu G为铺层同向不需要转角，省去这段
-%            Cu90=Roate(0,0,90,'XYZ')'*inv(Su)*Roate(0,0,90,'XYZ');%转角公式 
-%            CU=[inv(Su)+Cu90]/2;   Su=inv(CU);  %计算单向纤维的刚度矩阵  
+      real(16), parameter :: PI_16 = 4 * atan (1.0_16) 
+c-----------------------------------------------------------------
+c Extract material properties from props = Engineering Constant
+c i~n开头的变量都是默认整数型，因此Nu前加了x，要注意数据类型以及精度
+c-----------------------------------------------------------------
+      parameter (half=0.5d0,zero=0.d0,one=1.d0,two=2.d0)
+      
+      real*8::C(9),dstress(6),stress(6),DC(9),strain(6),plasticInc(3)
+     1 ,yieldInt,epsilon_ft1,epsilon_ft2,epsilon_fc1,epsilon_fc2,
+     1 DT11,DC11,SRT1,SRC1,Rota(6,6),RotaC(6,6),Stiff(6,6),Fle(6,6),
+     1 RotaS(6,6),SurSIG(6),Episf(6),smSIG(6),inRota(6,6),DSIG(6)
+      E110=props(1)
+      E220=props(2)
+      E330=props(3)
+      G120=props(4)
+      G130=props(5)
+      G230=props(6)
+      xnu12=props(7)
+      xnu13=props(8)
+      xnu23=props(9)
+      xnu21=xnu12*(E220/E110)
+      xnu31=xnu13*(E330/E110)
+      xnu32=xnu23*(E330/E220)
+      X_t=props(10)
+      X_c=props(11)
+      Y_t=props(12)
+      y_c=props(13)
+      S_12=props(14)
+      S_13=props(15)
+      S_23=props(16)	  
+      MAT = PROPS(17) !选择倾斜参数，MAT=1或2
+      GFT= PROPS(18) !纤维拉伸断裂能
+      GFC= PROPS(19) !纤维压缩断裂能
+      GMT= PROPS(20) !基体拉伸断裂能
+      GMC= PROPS(21) !基体压缩断裂能
+      f  =PROPS(22)  !是否激活单元删除，1为是，0为否
+      f2 =PROPS(23)  !损伤系数上限，达到及删除单元0~0.9999
+c-----------------------------------------------------------------
+C   刚度矩阵赋值
+c-----------------------------------------------------------------
+      delta=one - (xnu32*xnu23) - (xnu31*xnu13) - 
+     1            (xnu12*xnu21)-(two*xnu31*xnu23*xnu12)
+      C(1)=(E110*(one - xnu32*xnu23)) / delta!C11
+      C(2)=(E220*(one - xnu13*xnu31)) / delta!C22
+      C(3)=(E330*(one - xnu12*xnu21)) / delta!C33
+      
+      C(4)=(E110*(xnu31*xnu23+xnu21)) / delta!C12
+      C(5)=(E110*(xnu21*xnu32+xnu31)) / delta!C13
+      C(6)=(E220*(xnu12*xnu31+xnu32)) / delta!C23
+      
+      C(7)=G120
+      C(8)=G230
+      C(9)=G130
 
-%%%%经典层合板理论用于RVE模型模量计算
-        An=3.1415*Dn^2/4;AR=Ln^2;   %针刺区域面积
-        SL=[tu/(tu+ts)]*Su+[ts/(tu+ts)]*Ss;                  %Laminite：度矩阵叠加。
-        CR=(1-An/AR)*inv(SL)+[An/AR]*inv(Sn); SR=inv(CR);     %RVE：刚度阵叠加。
-%      CR=(1-An/AR)*CL+[An/AR]*inv(Sn); SR=inv(CR);                    %测试用，RVE：刚度阵叠加。
-%      SL=[tu/(tu+ts)]*SU+[ts/(tu+ts)]*Ss;SR=(1-An/AR)*SL+[An/AR]*Sn;   %测试用，Lami:柔度&RVE:柔度
-        ER11=1/SR(1,1); ER22=1/SR(2,2); ER33=1/SR(3,3);      %提取柔度矩阵中的模量和泊松比。
-        GR12=1/SR(4,4); GR23=1/SR(5,5); GR31=1/SR(6,6);      
-        vR12=-SR(2,1)*ER11; vR23=-SR(3,2)*ER22;vR23=-SR(1,3)*ER33;
-NPmodulus=[ER11,ER22,ER33;GR12,GR23,GR31;vR12,vR23,vR23]
+      Stiff=zero
+      Stiff(1,1)=C(1)
+      Stiff(2,2)=C(2)
+      Stiff(3,3)=C(3)    
+      Stiff(1,2)=C(4)
+      Stiff(2,1)=C(4)
+      Stiff(1,3)=C(5)	  
+      Stiff(3,1)=C(5)
+      Stiff(2,3)=C(6) 
+      Stiff(3,2)=C(6)
+      Stiff(4,4)=C(7)
+      Stiff(5,5)=C(8)	  
+      Stiff(6,6)=C(9)
+
+      Fle=zero
+      Fle(1,1)=ONE/E110
+      Fle(2,2)=ONE/E220
+      Fle(3,3)=ONE/E330
+      Fle(4,4)=ONE/G120
+      Fle(5,5)=ONE/G230
+      Fle(6,6)=ONE/G130 
+
+
+
+      DO 10 k=1,nblock
+         IF (totalTime.eq.zero)THEN !第一步计算，必须弹性
+		 
+             stressNew(k,1)=C(1)*strainInc(k,1)+C(4)
+     1       *strainInc(k,2)+C(5)*strainInc(k,3)
+             stressNew(k,2)=C(4)*strainInc(k,1)+C(2)
+     1       *strainInc(k,2)+C(6)*strainInc(k,3)	 
+             stressNew(k,3)=C(5)*strainInc(k,1)+C(6)
+     1       *strainInc(k,2)+C(3)*strainInc(k,3)
+             stressNew(k,4)=C(7)*two*strainInc(k,4)
+             stressNew(k,5)=C(8)*two*strainInc(k,5)
+             stressNew(k,6)=C(9)*two*strainInc(k,6)
+		 
+         ELSE	   
+
+         IF(stateNew(k,7).eq.one)THEN !未失效积分点
+          stateNew(k,1)=stateold(k,1)+(C(1)*strainInc(k,1)+C(4)
+     1    *strainInc(k,2)+C(5)*strainInc(k,3))
+          stateNew(k,2)=stateold(k,2)+(C(4)*strainInc(k,1)+C(2)
+     1    *strainInc(k,2)+C(6)*strainInc(k,3))	 
+          stateNew(k,3)=stateold(k,3)+(C(5)*strainInc(k,1)+C(6)
+     1    *strainInc(k,2)+C(3)*strainInc(k,3))
+          stateNew(k,4)=stateold(k,4)+(C(7)*two*strainInc(k,4))
+          stateNew(k,5)=stateold(k,5)+(C(8)*two*strainInc(k,5))
+          stateNew(k,6)=stateold(k,6)+(C(9)*two*strainInc(k,6))	   
+
+       DO i=1,9
+           DC(i)=C(i)
+       END DO
+
+c    计算应力		 
+      stressNew(k,1)=(one-stateOld(k,8))*stateNew(k,1)
+      stressNew(k,2)=(one-stateOld(k,9))*stateNew(k,2)
+      stressNew(k,3)=(one-stateOld(k,9))*stateNew(k,3)
+      stressNew(k,4)=(one-stateOld(k,10))*stateNew(k,4)
+      stressNew(k,5)=(one-stateOld(k,11))*stateNew(k,5)
+      stressNew(k,6)=(one-stateOld(k,12))*stateNew(k,6)
+
+
+      do i=1,6
+      dstress(i)=stressNew(k,i)
+      strain(i) =stateold(k,13+i)+strainInc(k,i)
+      statenew(k,13+i)=strain(i)
+      s(i)=dstress(i)
+
+      end do
+C      write(*,*)'strain',strain
+
+      s21=S_12
+      RT1=ZERO
+      RC1=ZERO
+      DT11=ZERO
+      DC11=ZERO
+      SRT1=ZERO
+      SRC1=ZERO
+      NTENS=6
+      NDI=3
+      NSHR=3
+      DMG=ONE
+c-----------------------------------------------------------------
+c    Puck and hashin
+c-----------------------------------------------------------------
+      IF(stressNew(k,1).ge.0) THEN
+         RT1=(dstress(1)/X_t)**two+dstress(4)**two/(S_12)**two
+     1    +dstress(6)**two/(S_13)**two !1方向拉伸失效系数
+      ELSE
+         RC1=(dstress(1)/X_c)**two !1方向压缩失效系数
+      END IF
+
+      SRT1=sqrt(RT1)
+      SRC1=sqrt(RC1)
+
+      IF (RT1.ge.1) THEN
+      DT11=one-(one/SRT1)*EXP((1-SRT1)*X_t**two*charLength(k)/E110/GFT)
+      ELSE IF (RC1.ge.1)THEN
+      DC11=one-(one/SRC1)*EXP((1-SRC1)*X_c**two*charLength(k)/E110/GFC)
+      END IF
+      stateNew(k,8)=max(DT11,DC11,stateOld(k,8))
+c      write(*,*)RT1,RC1,SRT1,SRC1,DT11,DC11
+c      write(*,*)'dstress,s',dstress,s
+      CALL THETAFP(S,S21,XTF,X_C,Y_T,Y_C,THETA,NTENS,NMP,MAXIM,NDI,
+     1 NSHR,MAT) 
+      CALL CFAILURE(S,xnu12,VF12,E110,EF1,S21,XTF,X_C,Y_T,Y_C,NDI,NSHR, 
+     1 xMFT,FFT,FFC,xMFC,DMG,NTENS,THETA,NMP,NW1,MAXIM,SIGN,MAT,TAUNT, 
+     2 TAUNL,PTR,RVVA1,YT1,S211) 
+
+      Statenew(k,21)=max(dmg,Stateold(k,21))
+C-------------------- 
+c   损伤变量计算更新
+C-------------------- 
+      Rota=zero
+      inRota=zero!旋转矩阵的逆矩阵
+      RotaC=zero
+      RotaS=zero
+!     旋转矩阵
+      xm=cos(THETA)
+      xn=sin(THETA)
+c      write(*,*)'THETA',THETA
+      Rota(1,1)=one
+      Rota(2,2)=xm**two
+      Rota(2,3)=xn**two
+      Rota(2,5)=two*xm*xn
+      Rota(3,2)=xn**two
+      Rota(3,3)=xm**two
+      Rota(3,5)=-two*xm*xn
+      Rota(4,4)=xm
+      Rota(4,6)=xn
+      Rota(5,2)=-xm*xn
+      Rota(5,3)=xm*xn
+      Rota(5,5)=xm**two-xn**two
+      Rota(6,4)=-xn
+      Rota(6,6)=xm
+
+      inRota(1,1)=one
+      inRota(2,2)=xm**two
+      inRota(2,3)=xn**two
+      inRota(2,5)=-two*xm*xn
+      inRota(3,2)=xn**two
+      inRota(3,3)=xm**two
+      inRota(3,5)=two*xm*xn
+      inRota(4,4)=xm
+      inRota(4,6)=-xn
+      inRota(5,2)=xm*xn
+      inRota(5,3)=-xm*xn
+      inRota(5,5)=xm**two-xn**two
+      inRota(6,4)=xn
+      inRota(6,6)=xm
+C      write(*,*)'Rota',Rota
+C      write(*,*)'inRota',inRota
+!     刚度矩阵旋转到断裂面
+
+      Do x=1,6
+       Do y=1,6      
+         Do o=1,6
+           Do p=1,6
+            RotaC(x,y)=RotaC(x,y)+Rota(x,o)*stiff(o,p)*Rota(y,p)
+           ENDDO 
+         ENDDO 
+       ENDDO 
+      ENDDO 
+C      write(*,*)'Rotac',RotaC
+!     应力旋转到断裂面
+      SurSIG=zero
+      Do x=1,6
+       Do y=1,6      
+         SurSIG(x)=SurSIG(x)+stateNew(k,i)*Rota(x,y)
+       ENDDO 
+      ENDDO 
+C     write(*,*)'SurSIG',SurSIG
+!     应变旋转到断裂面
+      Episf=zero
+      Do x=1,6
+       Do y=1,6      
+         Episf(x)= Episf(x)+strain(y)*inRota(y,x)
+       ENDDO 
+      ENDDO 
+C      write(*,*)'Episf',Episf
+
+!    计算断裂面初始失效时应变
+
+      EpisfNN=Episf(2)
+      EpisfNT=Episf(5)
+      EpisfNL=Episf(4)
+
+
+      d22c=zero
+      d22t=zero
+      IF (DMG.eq.ONE) THEN
+c      write(*,*)'DMG',DMG
+      SIGRF=SQRT(SIGN**TWO+TAUNT**TWO+TAUNL**TWO)
+      EPISFF=SQRT(EpisfNN**TWO+EpisfNT**TWO+EpisfNL**TWO)
+      SMT1=sqrt(xMFT)
+      SMC1=sqrt(xMFC)
+      IF (xMFT.ge.1) THEN
+      D22T=one-(one/SMT1)*EXP((1-SMT1)*Y_t**two*charLength(k)/E220/GMT)
+      ELSE IF (xMFC.ge.1)THEN
+      SD22C=one-(one/SMC1)*EXP((1-SMC1)*Y_c**two*SIGRF*EPISFF*
+     1 charLength(k)/GMC) 
+      ELSE
+      D22T=ZERO
+      SD22C=ZERO
+      END IF
+
+      stateNew(k,13)=max(SD22C,stateOld(k,13))!断裂面压缩损伤系数
+!    计算基体方向压缩损伤变量
+!    断裂面损伤刚度矩阵
+c      write(*,*)'RotaC1',RotaC
+      RotaC(1,4)=(one-SD22C)*RotaC(1,4)
+      RotaC(2,4)=(one-SD22C)*RotaC(2,4)
+      RotaC(3,4)=(one-SD22C)*RotaC(3,4)
+      RotaC(4,4)=(one-SD22C)*RotaC(4,4)
+      RotaC(4,1)=(one-SD22C)*RotaC(4,1)
+      RotaC(4,2)=(one-SD22C)*RotaC(4,2)
+      RotaC(4,3)=(one-SD22C)*RotaC(4,3)
+      RotaC(5,6)=(one-SD22C)*RotaC(5,6)
+      RotaC(6,5)=(one-SD22C)*RotaC(6,5)
+      RotaC(6,6)=(one-SD22C)*RotaC(6,6)
+
+      IF(SD22C.gt.stateold(k,13))then
+      Statenew(k,20)=THETA
+      else
+      Statenew(k,20)=Stateold(k,20)
+      endif
+!    断裂面损伤应力计算
+c      write(*,*)'RotaC2',RotaC
+      dSIG=zero
+      Do x=1,6
+       Do y=1,6
+       dSIG(x)=RotaC(x,y)*Episf(y)+dSIG(x)
+       End do
+      End do
+!    断裂面应力旋转回材料坐标系
+      smSIG=zero
+      Do x=1,6
+       Do y=1,6
+       smSIG(x)=inRota(x,y)*dSIG(y)+smSIG(x)
+       End do
+      End do
+
+
+C      write(*,*)'smSIG',smSIG
+!    更新损伤变量d22
+c      write(*,*),'smSIG,stress11',smSIG(1),stressNew(k,1)
+      d22c=ONE-smSIG(2)/E220/(strain(2)+xnu32/E330*smSIG(3)+xnu12/E110
+     1 *smSIG(1)) 
+C       xd=smSIG(2)/E220/(strain(2)+xnu32/E330*smSIG(3)+xnu12/E110
+C      1*stressNew(k,1)) 
+C c      write(*,*)ONE,smSIG(2),E220,strain(2),xnu32,E330,smSIG(3),xnu12
+C      1 ,E110,stressNew(k,1),xd
+c      d33c=ONE-smSIG(3)/E330/(strain(3)+xnu23/E220*smSIG(2)+xnu13/E110
+c     1*smSIG(1)) 
+c      write(*,*)'d22c,d33c',d22c,d33c
+      tol=1.0d-17 !消除0漂
+
+      if(strain(4).lt.tol)then
+      d12=zero
+      else
+      d12=one-smSIG(4)/G120/strain(4)
+      end if
+      if(strain(5).lt.tol)then
+      d23=zero
+      else
+      d23=one-smSIG(5)/G230/strain(5)
+      end if
+      if(strain(6).lt.tol)then
+      d13=zero
+      else
+      d13=one-smSIG(6)/G130/strain(6)
+      end if
+      ELSE
+      stateNew(k,13)=max(SD22C,stateOld(k,13))!断裂面压缩损伤系数
+      d22c=ZERO
+      d33c=ZERO
+      d12=ZERO
+      d23=ZERO
+      d13=ZERO
+      END IF	
+
+      stateNew(k,9)=max(d22t,d22c,stateOld(k,9))!基体方向损伤系数
+      stateNew(k,10)=max(d12,stateOld(k,10))!12方向损伤系数
+      stateNew(k,11)=max(d23,stateOld(k,11))!23方向损伤系数
+      stateNew(k,12)=max(d13,stateOld(k,12))!13方向损伤系数
+
+      stressNew(k,1)=(one-statenew(k,8))*stateNew(k,1)
+      stressNew(k,2)=(one-statenew(k,9))*stateNew(k,2)
+      stressNew(k,3)=(one-statenew(k,9))*stateNew(k,3)
+      stressNew(k,4)=(one-statenew(k,10))*stateNew(k,4)
+      stressNew(k,5)=(one-statenew(k,11))*stateNew(k,5)
+      stressNew(k,6)=(one-statenew(k,12))*stateNew(k,6)
+
+c      write(*,*)d33c,d22c,D22T,d12,d23,d13
+c-----------------------------------------------------------------
+c   End puck and hashin
+c-----------------------------------------------------------------	  
+
+c-----------------------------------------------------------------
+c   判断失效并删除单元
+c-----------------------------------------------------------------	  
+      IF(stateNew(k,9).GE.f2.OR.stateNew(k,10)
+     1 .GE.f2.OR.stateNew(k,11).GE.f2.OR.stateNew(k,12).GE.f2.AND.
+     1 f.eq.one)THEN
+         stateNew(k,7)=ZERO
+      ELSE
+         stateNew(k,7)=ONE
+      END IF		 
+c-----------------------------------------------------------------
+c-----------------------------------------------------------------	 
+
+         END IF
+         END IF
+10     continue
+
+c	   
+      RETURN
+      END
+      SUBROUTINE THETAFP(S,S21,XT,XC,YT,YC,THETA,NTENS,NMP,xMAXIM,NDI, 
+     1 NSHR,MAT)	 
+      include 'vaba_param.inc'
+      INTEGER NTENS,NDI,NSHR,MAT 
+      DOUBLE PRECISION 
+     1 P21T,P21C,P22C,S21,XT,XC,YT,YC,SIG13,SIG23, 
+     2 S(NTENS),FE,xMAXIM,MAXT,SIG11,SIG22,SIG33,SIG12, 
+     3 RVVA,THETA,P22T,TAUNT,SIGN,TAUNL,PTR,PCR,COS2PSI, 
+     4 SIN2PSI 
+      real(16), parameter :: PI = 4 * atan (1.0_16) 
+      PARAMETER (ZERO=0.D0, ONE=1.D0) 
+      IF(MAT.EQ.1) THEN 
+          P21T = 0.3D0  
+ 	    P21C = 0.25D0  
+          P22C = 0.2D0  
+          P22T=P22C 
+      ELSE 
+          P21T = 0.35D0  
+ 	    P21C = 0.3D0  
+          P22C = 0.3D0  
+          P22T=P22C 
+      END IF 
+
+          SIG11=S(1) 
+          SIG22=S(2) 
+          SIG33=S(3) 
+          SIG12=S(4)/2.D0 
+          SIG23=S(5)/2.D0  
+          SIG13=S(6)/2.D0  !!!
+
+
+      RVVA = (S21/(2.d0*P21C))*(sqrt((one+2.d0*P21C*YC/S21))-one)   
+
+      DO I = -90,90 
+          THETA = I*PI/180.D0
+          SIGN=SIG22*(COS(THETA))**2+SIG33*(SIN(THETA))**2+2.D0*SIG23* 
+     1    SIN(THETA)*COS(THETA) 
+          TAUNT=-SIG22*SIN(THETA)*COS(THETA)+SIG33*SIN(THETA)*COS(THETA)
+     1    +SIG23*((COS(THETA))**2-(SIN(THETA))**2) 
+          TAUNL=SIG13*SIN(THETA)+SIG12*COS(THETA) 
+          COS2PSI=TAUNT**2/(TAUNT**2+TAUNL**2) 
+          SIN2PSI=TAUNL**2/(TAUNT**2+TAUNL**2) 
+          PTR=(P22T/RVVA)*COS2PSI+(P21T/S21)*SIN2PSI 
+          PCR=(P22C/RVVA)*COS2PSI+(P21C/S21)*SIN2PSI 
+          IF(SIGN.GE.ZERO) THEN 
+           FE =SQRT((((ONE/YT)-PTR)*SIGN)**2+(TAUNT/RVVA)**2+
+     1     (TAUNL/S21)**2)+PTR*SIGN
+          ELSE	 
+           FE = SQRT((TAUNT/RVVA)**2+(TAUNL/S21)**2+(PCR*SIGN)**2)+ 
+     1     PCR*SIGN 
+          END IF 
+          IF(FE.GT.XMAXIM) THEN 
+              xMAXIM=FE 
+              xMAXT=THETA 
+          END IF 
+      END DO 
+      THETA=xMAXT          ! Angle of Fracture Plane 
+C      write(*,*)P21C,S21,RVVA,YC
+
+      RETURN 
+      END 
+C****************************************************************************** 
+C PUCK FAILURE CRITERIA******************************************************** 
+C******************************************************************************      
+      SUBROUTINE CFAILURE(S,V12,VF12,E1,EF1,S211,XT,XC,YT1,YC1,NDI,NSHR,
+     1 xMFT,FFT,FFC,xMFC,DMG,NTENS,THETA,NMP,NW1,MAXIM,SIGN,MAT,TAUNT,
+     2 TAUNL,PTR,RVVA,YT,S21)	 
+      include 'vaba_param.inc'
+      INTEGER NTENS,KINC,NOEL 
+      DOUBLE PRECISION 
+     1 P21T,P21C,P22C,MSIG,VF12,EF1,S21,XT,XC,YT,YC,MAXIM,E1, 
+     2 S(NTENS),STRANT(NTENS),xMFT,FFT,FFC,xMFC,DMG,V12,SIG23, 
+     3 T21C,RVVA,THETA,P22T,TAUNT,SIGN,TAUNL,PTR,PCR,COS2PSI,SIG13, 
+     4 SIN2PSI,NMP,M,SC,A,C,NW1,YT1,YC1,S211,SIG11,SIG22,SIG33,SIG12 
+      PARAMETER (ZERO=0.D0, ONE=1.D0) 
+
+          SIG11=S(1) 
+          SIG22=S(2) 
+          SIG33=S(3) 
+          SIG12=S(4)/2.D0 
+          SIG23=S(5)/2.D0 
+          SIG13=S(6)/2.D0
+
+      IF(MAT.EQ.1) THEN 
+          P21T = 0.3d0 
+ 	    P21C = 0.25d0 
+       P22C = 0.2d0 
+          P22T = P22C 
+          MSIG = 1.3d0 
+      ELSE 
+          P21T = 0.35d0 
+ 	    P21C = 0.3d0 
+       P22C = 0.25d0 
+          P22T = P22C 
+          MSIG = 1.1d0       
+      END IF 
+c 	RVVA = YC/(2*(1+P22C))     
+C 
+C     FAILURE CRITERIA 	   
+C 
+      YT=YT1 
+      YC=YC1 
+      S21=S211 
+      RVVA = (S21/(2.d0*P21C))*(sqrt(one+2.d0*P21C*YC/S21)-one)    
+      SIGN=SIG22*(COS(THETA))**2+SIG33*(SIN(THETA))**2+2.D0*SIG23* 
+     1 SIN(THETA)*COS(THETA) 
+      TAUNT=-SIG22*SIN(THETA)*COS(THETA)+SIG33*SIN(THETA)*COS(THETA)
+     1 +SIG23*((COS(THETA))**2-(SIN(THETA))**2) 
+      TAUNL=SIG13*SIN(THETA)+SIG12*COS(THETA) 
+      COS2PSI=TAUNT**2/(TAUNT**2+TAUNL**2) 
+      SIN2PSI=TAUNL**2/(TAUNT**2+TAUNL**2) 
+      PTR=(P22T/RVVA)*COS2PSI+(P21T/S21)*SIN2PSI 
+      PCR=(P22C/RVVA)*COS2PSI+(P21C/S21)*SIN2PSI 
+!     MATRIX TENSILE 
+      IF(SIGN.GE.ZERO) THEN 
+          xMFT =SQRT((((ONE/YT)-PTR)*SIGN)**2+(TAUNT/RVVA)**2+
+     1     (TAUNL/S21)**2)+PTR*SIGN
+          xMFC=ZERO	      
+      END IF 
+!     MATRIX  COMPRESSION 
+      IF(SIGN.LT.ZERO) THEN     
+ 	    xMFC = SQRT((((ONE/YT)-PTR)*SIGN)**2+(TAUNT/RVVA)**2+
+     1     (TAUNL/S21)**2)+PTR*SIGN
+          xMFT=ZERO 
+      END IF 
+      IF(xMFC.GE.ONE.OR.xMFT.GE.ONE.OR.FFT.GE.ONE.OR.FFC.GE.ONE) THEN
+          DMG=ONE 
+      ELSE 
+          DMG=ZERO 
+      END IF 
+c      write(*,*)'XMFT,C',XMFT,XMFC,RVVA,PTR,PcR,COS2PSI,SIN2PSI,TAUNL
+C      1,TAUNT,SIGN
+c      write(*,*)'s21,yt,yc',s21,yt,yc,s
+      RETURN 
+      END 	  
